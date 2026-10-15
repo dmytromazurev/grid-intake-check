@@ -1,5 +1,7 @@
 # Grid Intake Check
 
+[![CI](https://github.com/dmytromazurev/grid-intake-check/actions/workflows/ci.yml/badge.svg)](https://github.com/dmytromazurev/grid-intake-check/actions/workflows/ci.yml)
+
 Pre-ingest QA for utility power-grid data. Point it at a GIS export of poles, towers, lines and substations and in under a second it tells you how ready the data is to build an engineering model from, what is wrong and where, and what to ask the utility for.
 
 Python package · CLI · REST API · MCP server · [browser demo](https://dmytromazurev.github.io/grid-intake-check/)

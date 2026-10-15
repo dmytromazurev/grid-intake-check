@@ -12,13 +12,13 @@ jobs:
       matrix:
         python: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "22"
       - run: pip install -e ".[dev]"
       - run: ruff check src tests scripts
       - run: pytest -q
@@ -26,7 +26,7 @@ jobs:
         run: |
           gridintake check examples/vilnius-grid.geojson --html out/report.html --csv out/issues.csv || true
           ! gridintake check examples/vilnius-grid.geojson --fail-under 80
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: matrix.python == '3.12'
         with:
           name: vilnius-report
@@ -35,7 +35,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker build -t grid-intake-check .
       - name: Smoke test the API container
         run: |
