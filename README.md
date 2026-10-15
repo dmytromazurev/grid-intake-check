@@ -22,30 +22,30 @@ Grid Intake Check runs those checks in the first hour instead. It produces:
 
 ## Results on real data
 
-The bundled demo is the OpenStreetMap power grid around Vilnius (snapshot 2026-10-15): 1,275 structures, 189 line sections, 541 km, 34 substations. OSM stands in for a utility export; the issues it finds are real.
+The bundled demo is the OpenStreetMap power grid in a box around Vilnius (25.00–25.50 E, 54.58–54.82 N, snapshot 2026-10-15): 1,275 structures, 189 line sections, 263 km and 34 substations inside the box. Lines are fetched whole with every structure on them, so another 985 structures outside the box are kept as context. OSM stands in for a utility export; the issues it finds are real. For example, two pairs of 110 kV lines stop 14–18 m short of each other with no structure between them.
 
 ```text
 $ gridintake check examples/vilnius-grid.geojson
-vilnius-grid.geojson: 1,275 structures, 189 lines, 541.3 km, 34 substations · CRS EPSG:3346
-Readiness 45/100  (attributes 24, topology 78, geometry 48)
+vilnius-grid.geojson: 1,275 structures, 189 lines, 262.7 km, 34 substations · CRS EPSG:3346 · coverage declared, 985 structures outside it kept as context
+Readiness 53/100  (attributes 24, topology 92, geometry 66)
   [HIGH] Lines without voltage                     25
   [ok  ] Unparseable voltage values
   [ok  ] Several voltages on one line
   [ok  ] Cables don’t match circuits
   [ok  ] Voltage changes at a line joint
-  [HIGH] Dangling line ends                        13
-  [MED ] Line vertices without a structure         42
+  [HIGH] Dangling line ends                         4
+  [MED ] Line vertices without a structure         29
   [MED ] Structures not on any line                 1
   [ok  ] Duplicate structures
-  [MED ] Unusually long spans                       7
+  [MED ] Unusually long spans                       3
   [ok  ] Very short spans
   [low ] Notes left in the source data              1
 Findings:
   - 1,275 of 1,275 structures (100%) have no structure number, so the model can’t be matched to the asset register or work orders yet.
   - Suspension vs tension is known for only 6% of structures; tension sections would have to be inferred from geometry.
   - 25 lines have no voltage, so clearance rules can’t be assigned to them.
-  - 13 line ends stop in the open (not at a structure, substation or another line).
-  - 7 spans are far longer than their voltage class allows for, which usually means missing structures.
+  - 4 line ends stop in the open (not at a structure, substation or another line).
+  - 3 spans are far longer than their voltage class allows for, which usually means missing structures.
 ```
 
 ## What it checks
@@ -62,6 +62,8 @@ Findings:
 | Voltage change at a joint | Two line pieces meeting end to end with different voltages. |
 | Source notes | `fixme` notes left in the data. |
 
+**Coverage.** Checks run only inside the area the data is meant to describe (a survey footprint, an extract box): `--coverage west,south,east,north`, a `coverage` member in the GeoJSON, or the box stored with the demo data. Features outside it stay as context, so a line leaving the area doesn’t show up as a dangling end or a kilometres-long span. Without a coverage, the data extent is used, and ends within 300 m of its edge are skipped.
+
 All tolerances, required fields, field-name aliases, voltage classes, score weights and code mappings live in a YAML **rule pack** ([default](src/gridintake/rulepacks/default.yaml), [customer example](examples/rulepack-customer.yaml)), so one pack per customer is reused on every delivery.
 
 Coordinates: GeoJSON is read as EPSG:4326 unless a legacy `crs` member or `--crs` says otherwise. Data is projected to a metric working CRS (LKS-94 / EPSG:3346 in Lithuania, the local UTM zone elsewhere, or the source CRS if it is already metric). A file in a projected CRS with no CRS declared is rejected with a message saying what to ask the customer for.
@@ -75,7 +77,7 @@ gridintake check examples/vilnius-grid.geojson --html out/report.html --csv out/
 ```
 
 ```bash
-gridintake check FILE [--crs EPSG:3346] [--rules pack.yaml] [--json|--csv|--svg|--html PATH] [--fail-under 80]
+gridintake check FILE [--crs EPSG:3346] [--coverage W,S,E,N] [--rules pack.yaml] [--json|--csv|--svg|--html PATH] [--fail-under 80]
 gridintake reconcile FILE (--detections survey.geojson | --simulate) [--tolerance 3]
 gridintake formulas FILE
 gridintake request FILE
@@ -198,7 +200,7 @@ web/             browser demo (JS port of the same checks)
 data/            OpenStreetMap extract used by tests and the demo
 examples/        the same data as GeoJSON, a customer rule pack
 scripts/         re-fetch the OSM extract, convert to GeoJSON
-tests/           49 tests: one synthetic network per check, golden numbers on Vilnius, CRS, API, CLI, MCP over stdio, JS ↔ Python parity
+tests/           53 tests: one synthetic network per check, golden numbers on Vilnius, CRS, API, CLI, MCP over stdio, JS ↔ Python parity
 ```
 
 ## Development

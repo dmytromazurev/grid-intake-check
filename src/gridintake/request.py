@@ -12,7 +12,7 @@ def customer_request(res: AnalysisResult, dataset_name: str = "your network expo
         f = comp.get(key)
         return f["total"] - f["have"] if f else 0
 
-    n_struct, n_lines = len(res.dataset.structures), len(res.dataset.lines)
+    n_struct, n_lines = len(res.scope_structures), len(res.scope_lines)
     no_volt = [i for i in res.issues if i.check in {"line-voltage-missing", "line-voltage-invalid"}][:8]
     names = {ln.id: ln.tags.get("name", "") for ln in res.dataset.lines}
     examples = "; ".join((f"{names[i.feature_id]} " if names.get(i.feature_id) else "") + f"(id {i.feature_id})" for i in no_volt)

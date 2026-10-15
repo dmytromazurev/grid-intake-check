@@ -31,10 +31,12 @@ def _write(path: str, text: str) -> None:
 
 
 def cmd_check(a: argparse.Namespace) -> int:
-    res = run(a.file, crs=a.crs, rulepack=a.rules)
+    res = run(a.file, crs=a.crs, rulepack=a.rules, coverage=a.coverage)
     s = res.summary()
+    ctx = s["counts"]["context_structures"]
     print(f"{Path(a.file).name}: {s['counts']['structures']:,} structures, {s['counts']['lines']:,} lines, "
-          f"{s['counts']['line_km']:,} km, {s['counts']['substations']:,} substations · CRS {s['working_crs']}")
+          f"{s['counts']['line_km']:,} km, {s['counts']['substations']:,} substations · CRS {s['working_crs']}"
+          + (f" · coverage declared, {ctx:,} structures outside it kept as context" if s["coverage"] == "declared" else ""))
     print(f"Readiness {s['score']}/100  (attributes {s['parts']['attributes']}, topology {s['parts']['topology']}, geometry {s['parts']['geometry']})")
     for c in res.checks:
         mark = {"pass": "ok  ", "low": "low ", "medium": "MED ", "high": "HIGH"}[c.severity]
@@ -44,7 +46,8 @@ def cmd_check(a: argparse.Namespace) -> int:
         for h in s["headline"]:
             print(f"  - {h}")
     for n in s["notes"]:
-        print(f"note: {n}", file=sys.stderr)
+        if not n.startswith("Checks limited to the coverage area"):
+            print(f"note: {n}", file=sys.stderr)
     if a.json:
         _write(a.json, to_json(res))
     if a.csv:
@@ -60,7 +63,7 @@ def cmd_check(a: argparse.Namespace) -> int:
 
 
 def cmd_reconcile(a: argparse.Namespace) -> int:
-    res = run(a.file, crs=a.crs, rulepack=a.rules)
+    res = run(a.file, crs=a.crs, rulepack=a.rules, coverage=a.coverage)
     if a.simulate:
         det = simulate_detections(res, seed=a.seed)
     elif a.detections:
@@ -86,14 +89,14 @@ def cmd_reconcile(a: argparse.Namespace) -> int:
 
 
 def cmd_formulas(a: argparse.Namespace) -> int:
-    res = run(a.file, crs=a.crs, rulepack=a.rules)
+    res = run(a.file, crs=a.crs, rulepack=a.rules, coverage=a.coverage)
     for f in formulas(res):
         print(f"// {f['name']} · {f['purpose']}\n{f['formula']}\n")
     return 0
 
 
 def cmd_request(a: argparse.Namespace) -> int:
-    res = run(a.file, crs=a.crs, rulepack=a.rules)
+    res = run(a.file, crs=a.crs, rulepack=a.rules, coverage=a.coverage)
     print(customer_request(res, a.name or Path(a.file).name))
     return 0
 
@@ -128,6 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("file", help="GeoJSON, Overpass JSON or compact demo JSON")
         sp.add_argument("--crs", help="source CRS if not EPSG:4326, e.g. EPSG:3346")
         sp.add_argument("--rules", default="default", help="built-in rule pack name or path to a YAML rule pack")
+        sp.add_argument("--coverage", help="analysis area as west,south,east,north in lon/lat; outside it is context")
 
     c = sub.add_parser("check", help="run all intake checks")
     common(c)

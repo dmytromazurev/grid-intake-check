@@ -34,28 +34,29 @@ mcp = MCPServer(
     instructions="Pre-ingest QA for utility power-grid data. Start with check_grid_data on a GeoJSON or Overpass JSON file, "
                  "then drill into list_issues, reconcile_with_survey, generate_formulas or draft_customer_request.",
 )
-_cache: dict[tuple[str, float, str | None, str], AnalysisResult] = {}
+_cache: dict[tuple[str, float, str | None, str, str | None], AnalysisResult] = {}
 
 
-def _result(path: str, crs: str | None = None, rulepack: str = "default") -> AnalysisResult:
+def _result(path: str, crs: str | None = None, rulepack: str = "default", coverage: str | None = None) -> AnalysisResult:
     p = str(Path(path).expanduser().resolve())
     if not os.path.exists(p):
         raise ValueError(f"File not found: {path}")
-    key = (p, os.path.getmtime(p), crs, rulepack)
+    key = (p, os.path.getmtime(p), crs, rulepack, coverage)
     if key not in _cache:
         _cache.clear()
-        _cache[key] = run(p, crs=crs, rulepack=rulepack)
+        _cache[key] = run(p, crs=crs, rulepack=rulepack, coverage=coverage)
     return _cache[key]
 
 
-def check_grid_data(path: str, crs: str | None = None, rulepack: str = "default") -> dict[str, Any]:
+def check_grid_data(path: str, crs: str | None = None, rulepack: str = "default", coverage: str | None = None) -> dict[str, Any]:
     """Run all intake checks on a GeoJSON / Overpass JSON file of power-grid data.
 
     Returns the readiness score (0–100), its parts, headline findings, counts, and each check with
     its issue count and why it matters. Use list_issues for individual problems.
     crs: source CRS if the file isn't EPSG:4326, e.g. "EPSG:3346". rulepack: built-in name or YAML path.
+    coverage: "west,south,east,north" in lon/lat to limit checks to the surveyed area; data outside it is context.
     """
-    res = _result(path, crs, rulepack)
+    res = _result(path, crs, rulepack, coverage)
     return {"summary": res.summary(), "checks": [asdict(c) for c in res.checks], "completeness": res.completeness}
 
 

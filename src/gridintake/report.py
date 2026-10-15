@@ -29,6 +29,11 @@ def to_json(res: AnalysisResult, issue_limit: int | None = None) -> str:
 
 def svg_map(res: AnalysisResult, width: int = 900, checks: set[str] | None = None) -> str:
     minx, miny, maxx, maxy = res.bounds
+    if res.dataset.coverage_xy:  # frame the coverage area; lines leaving it are clipped by the viewBox
+        cx = [p[0] for p in res.dataset.coverage_xy]
+        cy = [p[1] for p in res.dataset.coverage_xy]
+        mx, my = (max(cx) - min(cx)) * 0.03, (max(cy) - min(cy)) * 0.03
+        minx, miny, maxx, maxy = min(cx) - mx, min(cy) - my, max(cx) + mx, max(cy) + my
     w, h = maxx - minx or 1, maxy - miny or 1
     height = max(200, int(width * h / w))
     pad = 12
@@ -41,7 +46,11 @@ def svg_map(res: AnalysisResult, width: int = 900, checks: set[str] | None = Non
         return height - pad - (y - miny) * k
 
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}" font-family="sans-serif">',
-             f'<rect width="{width}" height="{height}" fill="#F7F6F2"/>']
+             f'<rect width="{width}" height="{height}" fill="#F7F6F2"/>',
+             f'<clipPath id="frame"><rect width="{width}" height="{height}"/></clipPath><g clip-path="url(#frame)">']
+    if res.dataset.coverage_xy:
+        pts = " ".join(f"{X(x):.1f},{Y(y):.1f}" for x, y in res.dataset.coverage_xy)
+        parts.append(f'<polygon points="{pts}" fill="none" stroke="#5D6472" stroke-width="1" stroke-dasharray="6 4"/>')
     for sb in res.dataset.substations:
         pts = " ".join(f"{X(x):.1f},{Y(y):.1f}" for x, y in sb.ring_xy)
         parts.append(f'<polygon points="{pts}" fill="rgba(31,78,140,.12)" stroke="rgba(31,78,140,.4)" stroke-width="0.6"/>')
@@ -55,11 +64,16 @@ def svg_map(res: AnalysisResult, width: int = 900, checks: set[str] | None = Non
         if checks is not None and i.check not in checks:
             continue
         parts.append(f'<circle cx="{X(i.x):.1f}" cy="{Y(i.y):.1f}" r="5" fill="none" stroke="{SEV_COLOURS[i.severity]}" stroke-width="1.6"><title>{html.escape(i.check)}: {html.escape(i.detail)}</title></circle>')
+    parts.append("</g>")
     ly = 18
+    parts.append(f'<rect x="{pad}" y="4" width="200" height="{16 * (len(CLASS_COLOURS) + 5)}" fill="#F7F6F2" opacity="0.85"/>')
     for name, col in CLASS_COLOURS.items():
         if any(info["voltage_class"] == name for info in res.line_info.values()):
             parts.append(f'<line x1="{pad + 4}" y1="{ly}" x2="{pad + 26}" y2="{ly}" stroke="{col}" stroke-width="3"/><text x="{pad + 32}" y="{ly + 4}" font-size="11" fill="#1A1F2B">{html.escape(name)}</text>')
             ly += 16
+    if res.dataset.coverage_xy:
+        parts.append(f'<line x1="{pad + 4}" y1="{ly}" x2="{pad + 26}" y2="{ly}" stroke="#5D6472" stroke-width="1" stroke-dasharray="6 4"/><text x="{pad + 32}" y="{ly + 4}" font-size="11" fill="#1A1F2B">coverage (checks run inside)</text>')
+        ly += 16
     for sev in ("high", "medium", "low"):
         parts.append(f'<circle cx="{pad + 15}" cy="{ly}" r="5" fill="none" stroke="{SEV_COLOURS[sev]}" stroke-width="1.6"/><text x="{pad + 32}" y="{ly + 4}" font-size="11" fill="#1A1F2B">{sev} issue</text>')
         ly += 16

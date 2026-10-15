@@ -32,8 +32,8 @@ def test_check_json(client, data):
     r = client.post("/v1/check", files={"file": ("vilnius.json", data, "application/json")}, params={"issue_limit": 5})
     assert r.status_code == 200
     body = r.json()
-    assert body["summary"]["score"] == 45
-    assert len(body["issues"]) == 5 and body["issues_total"] == 89
+    assert body["summary"]["score"] == 53
+    assert len(body["issues"]) == 5 and body["issues_total"] == 63
 
 
 def test_check_csv_and_html(client, data):

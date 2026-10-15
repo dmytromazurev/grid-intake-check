@@ -21,7 +21,9 @@ def main(src: str, dst: str) -> None:
     for sb in d.get("substations", []):
         feats.append({"type": "Feature", "id": str(sb["id"]), "properties": {"power": "substation", "name": sb.get("name", ""), "voltage": sb.get("voltage", "")},
                       "geometry": {"type": "Polygon", "coordinates": [[[c[1], c[0]] for c in sb["ring"]]]}})
-    out = {"type": "FeatureCollection", "name": "vilnius-grid", "attribution": d.get("source", ""), "fetched": d.get("fetched", ""), "features": feats}
+    out = {"type": "FeatureCollection", "name": "vilnius-grid", "attribution": d.get("source", ""), "fetched": d.get("fetched", ""),
+           "coverage": d.get("coverage"),  # [west, south, east, north]: the analysis area; the rest is context
+           "features": feats}
     with open(dst, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
     print(f"{len(feats)} features → {dst}")

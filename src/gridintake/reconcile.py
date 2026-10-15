@@ -91,8 +91,8 @@ def simulate_detections(res: AnalysisResult, seed: int = 7) -> Detections:
     """Synthetic detections for demos: 0.5 m noise, ~3.5% missed, one 110 kV line offset ≈5 m,
     unrecorded structures on long spans, and street-light false positives."""
     rnd = random.Random(seed)
-    S = res.dataset.structures
-    lines110 = sorted((ln for ln in res.dataset.lines if res.line_info[ln.id]["voltage_class"] == "110 kV"), key=lambda ln: -len(ln.xy))
+    S = res.scope_structures  # a survey only sees the coverage area
+    lines110 = sorted((ln for ln in res.scope_lines if res.line_info[ln.id]["voltage_class"] == "110 kV"), key=lambda ln: -len(ln.xy))
     offset_line = lines110[3] if len(lines110) > 3 else (lines110[0] if lines110 else None)
     offset_ids: set[str] = set()
     if offset_line:
@@ -116,7 +116,7 @@ def simulate_detections(res: AnalysisResult, seed: int = 7) -> Detections:
     for sp in long_spans:
         k += 1
         det.append(Detection(f"D{k}", (sp.a.x + sp.b.x) / 2 + rnd.gauss(0, 1), (sp.a.y + sp.b.y) / 2 + rnd.gauss(0, 1), "tower"))
-    lines = res.dataset.lines
+    lines = res.scope_lines
     for _ in range(round(len(S) * 0.015)):
         ln = lines[int(rnd.random() * len(lines))]
         x, y = ln.xy[int(rnd.random() * len(ln.xy))]
@@ -127,7 +127,7 @@ def simulate_detections(res: AnalysisResult, seed: int = 7) -> Detections:
 
 
 def reconcile(res: AnalysisResult, det: Detections, tolerance_m: float = 3.0) -> Reconciliation:
-    S, D = res.dataset.structures, det.points
+    S, D = res.scope_structures, det.points
     d_tree = STRtree(shapely.points([d.x for d in D], [d.y for d in D]))
     s_pts = shapely.points([s.x for s in S], [s.y for s in S])
     si, di = d_tree.query(s_pts, predicate="dwithin", distance=tolerance_m)

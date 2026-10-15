@@ -43,10 +43,10 @@ async def _read(upload: UploadFile) -> bytes:
     return data
 
 
-async def _analyse(file: UploadFile, crs: str | None, rulepack: str):
+async def _analyse(file: UploadFile, crs: str | None, rulepack: str, coverage: str | None = None):
     data = await _read(file)
     try:
-        return run(data, crs=crs or None, rulepack=rulepack)
+        return run(data, crs=crs or None, rulepack=rulepack, coverage=coverage or None)
     except (IntakeError, ValueError) as e:
         raise HTTPException(422, str(e)) from e
     except json.JSONDecodeError as e:
@@ -56,6 +56,7 @@ async def _analyse(file: UploadFile, crs: str | None, rulepack: str):
 FileArg = Annotated[UploadFile, File(description="GeoJSON, Overpass JSON or compact demo JSON")]
 CrsArg = Annotated[str | None, Form(description="Source CRS if not EPSG:4326, e.g. EPSG:3346")]
 RulesArg = Annotated[str, Form(description="Built-in rule pack name")]
+CoverageArg = Annotated[str | None, Form(description="Analysis area as west,south,east,north (lon/lat); outside it is context")]
 
 
 @app.get("/health")
@@ -77,11 +78,11 @@ def rulepack(name: str) -> dict[str, Any]:
 
 
 @app.post("/v1/check", response_model=None)
-async def check(file: FileArg, crs: CrsArg = None, rulepack: RulesArg = "default",
+async def check(file: FileArg, crs: CrsArg = None, rulepack: RulesArg = "default", coverage: CoverageArg = None,
                 format: Annotated[str, Query(pattern="^(json|csv|html)$")] = "json",
                 issue_limit: Annotated[int | None, Query(ge=0)] = None):
     """Run all intake checks. ``format=csv`` returns the issues list, ``format=html`` a standalone report."""
-    res = await _analyse(file, crs, rulepack)
+    res = await _analyse(file, crs, rulepack, coverage)
     if format == "csv":
         return PlainTextResponse(issues_csv(res), media_type="text/csv")
     if format == "html":

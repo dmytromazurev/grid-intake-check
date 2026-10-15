@@ -67,6 +67,8 @@ class Dataset:
     working_crs: CRS
     meta: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    coverage_xy: list[tuple[float, float]] | None = None  # analysis area in the working CRS
+    coverage_lonlat: list[tuple[float, float]] | None = None
 
     @property
     def working_crs_code(self) -> str:
@@ -198,8 +200,27 @@ def read_json(source: str | Path | dict[str, Any] | bytes) -> dict[str, Any]:
     raise IntakeError(f"File not found: {source}")
 
 
+def _coverage_ring(cov: Any) -> list[tuple[float, float]] | None:
+    """Coverage as lon/lat: [west, south, east, north] or a GeoJSON Polygon geometry."""
+    if cov is None:
+        return None
+    if isinstance(cov, dict) and cov.get("type") == "Polygon":
+        return [tuple(p[:2]) for p in cov["coordinates"][0]]
+    if isinstance(cov, (list, tuple)) and len(cov) == 4 and all(isinstance(v, (int, float)) for v in cov):
+        w, s, e, n = (float(v) for v in cov)
+        if not (w < e and s < n):
+            raise IntakeError("Coverage must be [west, south, east, north] in lon/lat.")
+        steps = 64  # densify so the box stays accurate after projection
+        ring = [(w + (e - w) * i / steps, s) for i in range(steps)] + [(e, s + (n - s) * i / steps) for i in range(steps)]
+        ring += [(e - (e - w) * i / steps, n) for i in range(steps)] + [(w, n - (n - s) * i / steps) for i in range(steps)]
+        return ring + [ring[0]]
+    raise IntakeError("Coverage must be [west, south, east, north] in lon/lat or a GeoJSON Polygon.")
+
+
 def load_dataset(source: str | Path | dict[str, Any] | bytes, crs: str | None = None,
-                 field_aliases: dict[str, list[str]] | None = None) -> Dataset:
+                 field_aliases: dict[str, list[str]] | None = None, coverage: Any = None) -> Dataset:
+    """Load a file or dict. ``coverage`` (lon/lat bbox or Polygon) limits the checks to the area the
+    data is meant to describe, e.g. the survey footprint; features outside it are kept as context."""
     d = read_json(source)
     if isinstance(d, dict) and isinstance(d.get("structures"), list) and isinstance(d.get("lines"), list):
         raw, fmt, declared = _from_compact(d), "compact", "EPSG:4326"
@@ -256,4 +277,15 @@ def load_dataset(source: str | Path | dict[str, Any] | bytes, crs: str | None = 
     for k in ("source", "fetched"):
         if isinstance(d, dict) and k in d:
             meta[k] = d[k]
-    return Dataset(structures, lines, subs, src, work, meta, notes)
+    declared_cov = d.get("coverage") if isinstance(d, dict) else None
+    if declared_cov is None and fmt == "compact" and isinstance(d.get("bbox"), list) and len(d["bbox"]) == 4:
+        s_, w_, n_, e_ = d["bbox"]
+        declared_cov = [w_, s_, e_, n_]
+    ring_ll = _coverage_ring(coverage if coverage is not None else declared_cov)
+    ring_xy = None
+    if ring_ll:
+        ll_to_w = Transformer.from_crs(4326, work, always_xy=True)
+        xs_, ys_ = ll_to_w.transform([p[0] for p in ring_ll], [p[1] for p in ring_ll])
+        ring_xy = list(zip(xs_, ys_, strict=True))
+        meta["coverage"] = "explicit" if coverage is not None else "declared in file"
+    return Dataset(structures, lines, subs, src, work, meta, notes, ring_xy, ring_ll)

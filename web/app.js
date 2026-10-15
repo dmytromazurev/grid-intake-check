@@ -22,8 +22,8 @@ function load(ds, label, name){
   if(!v.ok){ showError(v.msg); return; }
   showError(null);
   res = G.analyse(ds); det = null; rec = null; selCheck = null; selRec = null; selected = null; datasetLabel = label; datasetName = name || label;
-  const km = res.lines.reduce((s, l) => s + l.length, 0) / 1000;
-  $("#dsline").innerHTML = `<span>${esc(label)}</span><span>${fmtInt(res.structures.length)} structures</span><span>${fmtInt(res.lines.length)} lines · ${km.toFixed(0)} km</span><span>${fmtInt(res.substations.length)} substations</span><span>Working CRS ${esc(res.crs.code)} (${esc(res.crs.name)})</span>${res.meta.fetched ? `<span>Snapshot ${esc(res.meta.fetched.slice(0, 10))}</span>` : ""}`;
+  const km = res.scopeLines.reduce((s, l) => s + l.lengthInCoverage, 0) / 1000, ctx = res.structures.length - res.scopeStructures.length;
+  $("#dsline").innerHTML = `<span>${esc(label)}</span><span>${fmtInt(res.scopeStructures.length)} structures</span><span>${fmtInt(res.scopeLines.length)} lines · ${km.toFixed(0)} km in coverage</span>${ctx ? `<span>${fmtInt(ctx)} structures outside coverage (context)</span>` : ""}<span>${fmtInt(res.substations.length)} substations</span><span>Working CRS ${esc(res.crs.code)} (${esc(res.crs.name)})</span>${res.meta.fetched ? `<span>Snapshot ${esc(res.meta.fetched.slice(0, 10))}</span>` : ""}`;
   fitView(); renderAll();
 }
 async function loadDemo(){
@@ -56,7 +56,14 @@ let view = {cx:0, cy:0, s:0.01}, W = 0, H = 0, DPR = 1;
 function resize(){ const r = wrap.getBoundingClientRect(); DPR = window.devicePixelRatio || 1; W = r.width; H = r.height; canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR); draw(); }
 new ResizeObserver(resize).observe(wrap);
 function fitView(b){
-  if(!res) return; b = b || res.bounds;
+  if(!res) return;
+  if(!b && res.coverage){ // frame the coverage area, not every line that leaves it
+    const xs = res.coverage.map(p => p.x), ys = res.coverage.map(p => p.y);
+    b = {minx:Math.min(...xs), miny:Math.min(...ys), maxx:Math.max(...xs), maxy:Math.max(...ys)};
+    const mx = (b.maxx - b.minx) * 0.04, my = (b.maxy - b.miny) * 0.04;
+    b = {minx:b.minx - mx, miny:b.miny - my, maxx:b.maxx + mx, maxy:b.maxy + my};
+  }
+  b = b || res.bounds;
   const w = Math.max(50, b.maxx - b.minx), h = Math.max(50, b.maxy - b.miny);
   view.cx = (b.minx + b.maxx) / 2; view.cy = (b.miny + b.maxy) / 2;
   view.s = Math.min((W || 600) / w, (H || 500) / h) * 0.9; draw();
@@ -100,6 +107,18 @@ function draw(){
       const p = it.d || it.s || it; const X = sx(p.x), Y = sy(p.y);
       ctx.strokeStyle = css(cat.color); ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(X, Y, 6, 0, 7); ctx.stroke();
     }
+  }
+  // coverage: dim everything outside it and outline it
+  if(res.coverage){
+    const ring = res.coverage;
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H);
+    ring.forEach((p, i) => i ? ctx.lineTo(sx(p.x), sy(p.y)) : ctx.moveTo(sx(p.x), sy(p.y))); ctx.closePath();
+    ctx.fillStyle = css("--surface"); ctx.globalAlpha = 0.6; ctx.fill("evenodd"); ctx.restore();
+    ctx.strokeStyle = css("--muted"); ctx.lineWidth = 1.2; ctx.setLineDash([7, 5]);
+    ctx.beginPath(); ring.forEach((p, i) => i ? ctx.lineTo(sx(p.x), sy(p.y)) : ctx.moveTo(sx(p.x), sy(p.y))); ctx.stroke(); ctx.setLineDash([]);
+    const top = ring.reduce((a, p) => sy(p.y) < sy(a.y) ? p : a, ring[0]), left = ring.reduce((a, p) => sx(p.x) < sx(a.x) ? p : a, ring[0]);
+    ctx.fillStyle = css("--muted"); ctx.font = "12px JetBrains Mono, monospace";
+    ctx.fillText("coverage: checks run inside, outside is context", Math.max(8, sx(left.x) + 6), Math.max(16, sy(top.y) - 6));
   }
   // issue rings
   ctx.strokeStyle = css("--issue"); ctx.lineWidth = 2;
@@ -151,7 +170,7 @@ function renderInfo(){
 }
 function renderLegend(){
   $("#legend").innerHTML = VCLASSES.map(k => `<span><i style="background:var(${VVAR[k]})${k === "unknown" ? ";background:repeating-linear-gradient(90deg,var(--vunk) 0 5px,transparent 5px 9px)" : ""}"></i>${k === "unknown" ? "voltage unknown" : k}</span>`).join("") +
-    `<span><i style="background:var(--sub-line);height:9px"></i>substation</span><span><b></b>issue</span>`;
+    `<span><i style="background:var(--sub-line);height:9px"></i>substation</span><span><i style="background:repeating-linear-gradient(90deg,var(--muted) 0 6px,transparent 6px 10px)"></i>coverage</span><span><b></b>issue</span>`;
 }
 
 /* ======================= TABS ======================= */
@@ -183,8 +202,9 @@ function headline(){
 }
 function renderOverview(){
   if(!res){ $("#panel-overview").innerHTML = ""; return; }
-  const e = res.endpointStats, km = {}; res.lines.forEach(l => km[l.vclass] = (km[l.vclass] || 0) + l.length / 1000);
-  const types = {}; res.structures.forEach(s => types[s.power] = (types[s.power] || 0) + 1);
+  const e = res.endpointStats, km = {}; res.scopeLines.forEach(l => km[l.vclass] = (km[l.vclass] || 0) + l.lengthInCoverage / 1000);
+  const types = {}; res.scopeStructures.forEach(s => types[s.power] = (types[s.power] || 0) + 1);
+  const ctxN = res.structures.length - res.scopeStructures.length;
   const comp = (list) => `<div class="tablewrap"><table><thead><tr><th>Attribute</th><th>Filled</th><th>Why it matters for the twin</th></tr></thead><tbody>${list.map(f => { const p = pct(f.have, f.total);
     return `<tr><td>${esc(f.label)}<div class="muted" style="font-family:var(--f-mono);font-size:11.5px">${esc(f.key)}</div></td><td><div class="cbar"><div class="bar"><i class="${barCls(p)}" style="width:${Math.max(p, 1)}%"></i></div><span class="num">${p}%</span></div><div class="muted num" style="font-size:12px">${fmtInt(f.have)} / ${fmtInt(f.total)}</div></td><td class="why">${esc(f.why)}</td></tr>`; }).join("")}</tbody></table></div>`;
   $("#panel-overview").innerHTML = `
@@ -196,14 +216,15 @@ function renderOverview(){
       <div class="row"><button class="btn sm" data-goto="issues">See all issues</button><button class="btn sm" data-goto="request">Draft the customer data request</button></div></div>
     <div class="card"><h2>What’s in the file</h2><div class="stats">
       ${Object.entries(types).map(([k, v]) => `<div class="stat"><b>${fmtInt(v)}</b><span>${esc(k)}s</span></div>`).join("")}
-      <div class="stat"><b>${fmtInt(res.lines.length)}</b><span>line ways</span></div>
+      <div class="stat"><b>${fmtInt(res.scopeLines.length)}</b><span>line ways</span></div>
       ${VCLASSES.filter(k => km[k]).map(k => `<div class="stat"><b>${km[k].toFixed(0)} km</b><span>${esc(k)}</span></div>`).join("")}
-      <div class="stat"><b>${fmtInt(res.substations.length)}</b><span>substations</span></div></div></div>
+      <div class="stat"><b>${fmtInt(res.substations.length)}</b><span>substations</span></div></div>
+      ${res.coverage ? `<p class="muted" style="font-size:13px">Counts are inside the coverage area (dashed on the map). ${ctxN ? fmtInt(ctxN) + " structures on the same lines lie outside it and are kept as context only: they make spans and line ends at the boundary correct, but aren’t checked." : ""}</p>` : ""}</div>
     <div class="card"><h2>Structure attributes</h2>${comp(res.completeness.structures)}</div>
     <div class="card"><h2>Line attributes</h2>${comp(res.completeness.lines)}</div>
     <div class="card"><h2>Where line ends land</h2>
       <div class="stats"><div class="stat"><b>${e.onStructure}</b><span>on a structure</span></div><div class="stat"><b>${e.atSubstation}</b><span>at a substation (≤ ${res.opts.subTol} m)</span></div><div class="stat"><b>${e.joint}</b><span>join another line</span></div><div class="stat"><b style="color:var(--issue)">${e.dangling}</b><span>dangling</span></div><div class="stat"><b>${e.edge}</b><span>at the data edge (ignored)</span></div></div>
-      <p class="muted" style="font-size:13px">Ends within ${res.opts.edgeBuffer} m of the data boundary are ignored: lines cut by the extract would otherwise look broken. Same rule as clipping a GIS ↔ LiDAR comparison to the survey footprint.</p></div>
+      <p class="muted" style="font-size:13px">Ends outside the coverage or within ${res.opts.edgeBuffer} m of its edge are not checked: a line cut by the extract isn’t a real gap. Same rule as clipping a GIS ↔ LiDAR comparison to the survey footprint.</p></div>
     <div class="card"><h2>Spans by voltage class</h2><p class="muted" style="font-size:13px">A span is the conductor between two consecutive structures along a line.</p>
       <div class="tablewrap"><table><thead><tr><th>Class</th><th class="r">Spans</th><th class="r">Median</th><th class="r">P95</th><th class="r">Max</th></tr></thead><tbody>
       ${VCLASSES.filter(k => res.spanStats[k]).map(k => { const s = res.spanStats[k]; return `<tr><td>${esc(k)}</td><td class="r num">${fmtInt(s.n)}</td><td class="r num">${fmtInt(s.median)} m</td><td class="r num">${fmtInt(s.p95)} m</td><td class="r num">${fmtInt(s.max)} m</td></tr>`; }).join("")}</tbody></table></div></div>`;
@@ -328,7 +349,7 @@ const DEFAULT_MAP = {
 };
 function valueTable(field){
   const counts = {}; let missing = 0;
-  res.structures.forEach(s => { const v = s.tags[field] != null ? s.tags[field] : s[field]; if(v == null || v === "") missing++; else counts[v] = (counts[v] || 0) + 1; });
+  res.scopeStructures.forEach(s => { const v = s.tags[field] != null ? s.tags[field] : s[field]; if(v == null || v === "") missing++; else counts[v] = (counts[v] || 0) + 1; });
   return {field, values:Object.entries(counts).sort((a, b) => b[1] - a[1]), missing};
 }
 const target = (field, v) => (mapOverrides[field] && mapOverrides[field][v] != null) ? mapOverrides[field][v] : ((DEFAULT_MAP[field] || {})[v] || "");
@@ -345,7 +366,7 @@ function renderMapping(){
     <div class="card"><h2>Source values → model library types</h2>
       <p>Every utility codes assets differently. Map each source value to a library type once, keep the mapping with the project, and count what’s left unmapped before building the model. Edit the targets; the formulas below update.</p>
       <p class="muted" style="font-size:13px">Target names are placeholders for the customer’s pole, tower and assembly library entries.</p></div>
-    ${fields.map(f => { const vt = valueTable(f), total = res.structures.length;
+    ${fields.map(f => { const vt = valueTable(f), total = res.scopeStructures.length;
       return `<div class="card"><div class="row between"><h3><code>${f}</code></h3><span class="chip ${vt.missing ? "high" : "pass"}">${fmtInt(vt.missing)} missing (${pct(vt.missing, total)}%)</span></div>
       <div class="tablewrap"><table><thead><tr><th>Source value</th><th class="r">Count</th><th>Library type</th></tr></thead><tbody>
       ${vt.values.map(([v, n]) => `<tr><td><code>${esc(v)}</code></td><td class="r num">${fmtInt(n)}</td><td><input type="text" id="map-${esc(f)}-${String(v).replace(/[^a-z0-9]/gi, "_")}" data-mf="${esc(f)}" data-mv="${esc(v)}" value="${esc(target(f, v))}" placeholder="UNMAPPED" aria-label="Library type for ${esc(f)} ${esc(v)}"></td></tr>`).join("") || `<tr><td colspan="3" class="muted">No values present.</td></tr>`}
@@ -389,7 +410,7 @@ function requestText(){
 
 Hi [name],
 
-Thank you for the data. We’ve run our intake checks on ${datasetName} (${fmtInt(res.structures.length)} structures, ${fmtInt(res.lines.length)} line sections). Most of it is ready to use. To build an accurate model we need a few things confirmed or added:
+Thank you for the data. We’ve run our intake checks on ${datasetName} (${fmtInt(res.scopeStructures.length)} structures, ${fmtInt(res.scopeLines.length)} line sections). Most of it is ready to use. To build an accurate model we need a few things confirmed or added:
 
 ${lines.join("\n")}
 
@@ -420,7 +441,7 @@ function renderAbout(){
       <p>Building a digital twin starts with the customer’s data: a GIS export, an asset register, LiDAR. Data gaps (no structure numbers, missing voltages, lines that stop in the air, structures in the wrong place) usually surface one by one during model build, each one a new question to the utility and a few days of waiting.</p>
       <p>This prototype runs the checks in the first hour instead: it scores how ready a delivery is, shows every issue on a map, reconciles the register with survey detections, drafts the mapping to library types and writes the data request to the customer.</p></div>
     <div class="card"><h2>What’s real here</h2><ul class="plain">
-      <li><strong>Data:</strong> ${S ? fmtInt(S.structures.length) + " structures and " + fmtInt(S.lines.length) + " line sections" : "the power grid"} around Vilnius from OpenStreetMap (snapshot ${S && S.meta.fetched ? esc(S.meta.fetched.slice(0, 10)) : "October 2026"}). OSM stands in for a utility GIS export; the issues found in it are real.</li>
+      <li><strong>Data:</strong> ${S ? fmtInt(S.scopeStructures.length) + " structures and " + fmtInt(S.scopeLines.length) + " line sections" : "the power grid"} inside a box around Vilnius from OpenStreetMap (snapshot ${S && S.meta.fetched ? esc(S.meta.fetched.slice(0, 10)) : "October 2026"}). OSM stands in for a utility GIS export; the issues found in it are real. Lines are fetched whole with every structure on them, so the parts outside the box are context and the checks only run inside it.</li>
       <li><strong>Projection:</strong> WGS 84 → LKS-94 / Lithuania TM (EPSG:3346), computed in the browser; UTM is picked automatically elsewhere.</li>
       <li><strong>Checks:</strong> attribute completeness, voltage validity, cables vs circuits, dangling ends with substation awareness, bends without structures, orphans, duplicates, span outliers per voltage class, joint voltage mismatches. All run in the browser in well under a second.</li>
       <li><strong>Simulated:</strong> the LiDAR detections on the GIS ↔ LiDAR tab are synthetic, clearly labelled, and only there to demonstrate the matching method. Upload real detections as GeoJSON points to use it for real.</li></ul></div>
@@ -443,7 +464,7 @@ function renderAbout(){
       <li><strong>Deployment templates:</strong> library mappings, environments and QA reports saved as a reusable starter per region (AS/NZS 7000, NESC, EN 50341).</li></ul></div>
     <div class="card"><h2>Two-minute talk track</h2><ol class="plain">
       <li>“Your posting says deployment engineers ingest LiDAR, GIS and asset data and do QA to engineering-grade accuracy. I wanted to see what that feels like, so I took the real grid around Vilnius from OpenStreetMap as a stand-in for a utility export.”</li>
-      <li>“In under a second it found that no structure has a number, suspension/tension is known for 6%, 25 lines have no voltage, 13 line ends stop in the open and some spans run for kilometres without a structure.”</li>
+      <li>“In under a second it found that no structure has a number, suspension/tension is known for 6%, 25 lines have no voltage, and two pairs of 110 kV lines stop 14–18 m short of each other with no structure between them.”</li>
       <li>“The GIS ↔ LiDAR tab shows the matching method on simulated detections: it separates a systematic 5 m offset on one line from genuinely missing and unrecorded structures, so you fix one transform instead of editing each record.”</li>
       <li>“It then writes the customer data request and the map_lookup formulas for your formula language. I don’t know your internal tooling, so I’d love to hear how close this is to what the team does today.”</li></ol></div>`;
 }

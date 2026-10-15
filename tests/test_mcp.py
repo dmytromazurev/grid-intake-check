@@ -10,9 +10,9 @@ from gridintake import mcp_server as m
 
 def test_tools_direct(vilnius_path, tmp_path):
     p = str(vilnius_path)
-    assert m.check_grid_data(p)["summary"]["score"] == 45
-    assert m.list_issues(p, check="dangling-end")["total"] == 13
-    assert m.list_issues(p, severity="high", limit=3)["total"] == 38
+    assert m.check_grid_data(p)["summary"]["score"] == 53
+    assert m.list_issues(p, check="dangling-end")["total"] == 4
+    assert m.list_issues(p, severity="high", limit=3)["total"] == 29
     assert m.reconcile_with_survey(p, simulate=True)["synthetic_detections"] is True
     assert "map_lookup" in m.generate_formulas(p)["formulas"][0]["formula"]
     assert "Structure numbers" in m.draft_customer_request(p)
@@ -40,6 +40,6 @@ def test_stdio_server_lists_and_calls_tools(vilnius_path):
                         "draft_customer_request", "export_report"} <= names
                 out = await s.call_tool("check_grid_data", {"path": str(vilnius_path)})
                 assert not out.is_error
-                assert '"score": 45' in out.content[0].text or '"score":45' in out.content[0].text
+                assert '"score": 53' in out.content[0].text or '"score":53' in out.content[0].text
 
     anyio.run(go)

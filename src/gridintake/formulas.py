@@ -19,13 +19,13 @@ MAPPED_FIELDS = ["power", "material", "line_attachment", "design"]
 def value_counts(res: AnalysisResult, field: str) -> dict[str, Any]:
     counts: dict[str, int] = {}
     missing = 0
-    for s in res.dataset.structures:
+    for s in res.scope_structures:
         v = s.power if field == "power" else s.tags.get(field)
         if v in (None, ""):
             missing += 1
         else:
             counts[v] = counts.get(v, 0) + 1
-    return {"field": field, "values": dict(sorted(counts.items(), key=lambda kv: -kv[1])), "missing": missing, "total": len(res.dataset.structures)}
+    return {"field": field, "values": dict(sorted(counts.items(), key=lambda kv: -kv[1])), "missing": missing, "total": len(res.scope_structures)}
 
 
 def mapping_table(res: AnalysisResult, overrides: dict[str, dict[str, str]] | None = None) -> list[dict[str, Any]]:

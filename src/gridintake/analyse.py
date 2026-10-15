@@ -108,6 +108,8 @@ class AnalysisResult:
     parts: dict[str, int]
     bounds: tuple[float, float, float, float]
     notes: list[str]
+    scope_structures: list[Structure] = field(default_factory=list)
+    scope_lines: list[Line] = field(default_factory=list)
 
     def check(self, check_id: str) -> Check:
         return next(c for c in self.checks if c.id == check_id)
@@ -133,18 +135,22 @@ class AnalysisResult:
         ds = self.dataset
         km: dict[str, float] = {}
         for info in self.line_info.values():
-            km[info["voltage_class"]] = km.get(info["voltage_class"], 0) + info["length_m"] / 1000
+            if info["in_scope"]:
+                km[info["voltage_class"]] = km.get(info["voltage_class"], 0) + info["length_in_coverage_m"] / 1000
         types: dict[str, int] = {}
-        for s in ds.structures:
+        for s in self.scope_structures:
             types[s.power] = types.get(s.power, 0) + 1
         return {
             "score": self.score,
             "parts": self.parts,
             "working_crs": ds.working_crs_code,
             "source_crs": ds.meta.get("source_crs"),
-            "counts": {"structures": len(ds.structures), "structure_types": types, "lines": len(ds.lines),
+            "counts": {"structures": len(self.scope_structures), "structure_types": types, "lines": len(self.scope_lines),
                        "line_km": round(sum(km.values()), 1), "line_km_by_class": {k: round(v, 1) for k, v in km.items()},
-                       "substations": len(ds.substations), "issues": len(self.issues)},
+                       "substations": len(ds.substations), "issues": len(self.issues),
+                       "context_structures": len(ds.structures) - len(self.scope_structures),
+                       "context_lines": len(ds.lines) - len(self.scope_lines)},
+            "coverage": "declared" if ds.coverage_xy else "data extent",
             "headline": self.headline(),
             "endpoints": self.endpoints,
             "span_stats": {k: {kk: round(vv, 1) for kk, vv in v.items()} for k, v in self.span_stats.items()},
@@ -203,14 +209,35 @@ def analyse(ds: Dataset, rules: RulePack | None = None) -> AnalysisResult:
     def add(check: str, sev: str, feature: str, fid: str, x: float, y: float, lon: float, lat: float, detail: str) -> None:
         issues.append(Issue(check, sev, feature, fid, x, y, lon, lat, detail))
 
-    # bounds & inner zone (ends near the extract boundary are not real gaps)
+    # Coverage = the area the data is meant to describe (survey footprint, extract box). Without one,
+    # the data extent is used. Checks near its edge are skipped: a cut line is not a real gap.
     xs = [s.x for s in S] + [p[0] for ln in L for p in ln.xy]
     ys = [s.y for s in S] + [p[1] for ln in L for p in ln.xy]
     minx, miny, maxx, maxy = min(xs), min(ys), max(xs), max(ys)
     eb = r.edge_buffer_m
+    cov = shapely.Polygon(ds.coverage_xy) if ds.coverage_xy else None
+    zone = None
+    if cov is not None:
+        zone = cov.buffer(-eb) if eb > 0 else cov
+        shapely.prepare(cov)
+        shapely.prepare(zone)
 
     def inner(x: float, y: float) -> bool:
+        if zone is not None:
+            return bool(zone.covers(shapely.Point(x, y)))
         return eb <= 0 or (minx + eb < x < maxx - eb and miny + eb < y < maxy - eb)
+
+    def in_cov(x: float, y: float) -> bool:
+        return cov is None or bool(cov.covers(shapely.Point(x, y)))
+
+    line_geom = {ln.id: shapely.LineString(ln.xy) for ln in L}
+    scope_s = [s for s in S if in_cov(s.x, s.y)]
+    scope_l = [ln for ln in L if cov is None or line_geom[ln.id].intersects(cov)]
+    scope_s_ids = {s.id for s in scope_s}
+    scope_l_ids = {ln.id for ln in scope_l}
+    if cov is not None:
+        notes.append(f"Checks limited to the coverage area: {len(scope_s):,} of {len(S):,} structures and "
+                     f"{len(scope_l):,} of {len(L):,} lines; the rest is context.")
 
     # voltage
     volts: dict[str, Voltage] = {ln.id: parse_voltage(ln.tags.get("voltage")) for ln in L}
@@ -230,13 +257,13 @@ def analyse(ds: Dataset, rules: RulePack | None = None) -> AnalysisResult:
             out.append({"key": f.key, "label": f.label, "why": f.why, "critical": f.critical, "have": have, "total": len(items)})
         return out
 
-    completeness = {"structures": comp(S, r.structure_fields), "lines": comp(L, r.line_fields)}
+    completeness = {"structures": comp(scope_s, r.structure_fields), "lines": comp(scope_l, r.line_fields)}
 
     def mid(ln: Line) -> tuple[float, float, float, float]:
         i = len(ln.xy) >> 1
         return (*ln.xy[i], *ln.lonlat[i])
 
-    for ln in L:
+    for ln in scope_l:
         v = volts[ln.id]
         if not v.ok and v.kind == "missing":
             add("line-voltage-missing", "high", "line", ln.id, *mid(ln), "Line has no voltage" + (f" ({ln.tags['name']})" if ln.tags.get("name") else ""))
@@ -298,14 +325,21 @@ def analyse(ds: Dataset, rules: RulePack | None = None) -> AnalysisResult:
                     endpoints["joint"] += 1
                 else:
                     endpoints["dangling"] += 1
-                    add("dangling-end", "high", "line", ln.id, x, y, *ln.lonlat[i], "Line end is not on a structure, a substation or another line")
+                    detail = "Line end is not on a structure, a substation or another line"
+                    near = [j for j in v_tree.query(shapely.Point(x, y), predicate="dwithin", distance=50.0).tolist() if v_owner[j] != ln.id]
+                    if near:
+                        j = min(near, key=lambda j: shapely.distance(v_pts[j], shapely.Point(x, y)))
+                        detail += f"; line {v_owner[j]} passes {shapely.distance(v_pts[j], shapely.Point(x, y)):.0f} m away, so a structure or connection is probably missing between them"
+                    add("dangling-end", "high", "line", ln.id, x, y, *ln.lonlat[i], detail)
             elif not st and inner(x, y):
                 interior += 1
             if st:
-                if prev and prev.id != st.id:
+                if prev and prev.id != st.id and inner(prev.x, prev.y) and inner(st.x, st.y):
                     spans.append(Span(ln.id, vclass[ln.id], prev, st, since))
                 prev, since = st, 0.0
-        line_info[ln.id] = {"length_m": along, "voltage_class": vclass[ln.id]}
+        in_scope = ln.id in scope_l_ids
+        inside_len = along if cov is None else (line_geom[ln.id].intersection(cov).length if in_scope else 0.0)
+        line_info[ln.id] = {"length_m": along, "length_in_coverage_m": inside_len, "voltage_class": vclass[ln.id], "in_scope": in_scope}
         if interior:
             j = max(1, n >> 1)
             add("bend-no-structure", "medium" if interior > 2 else "low", "line", ln.id, *ln.xy[j], *ln.lonlat[j],
@@ -318,7 +352,7 @@ def analyse(ds: Dataset, rules: RulePack | None = None) -> AnalysisResult:
     if s_tree is not None:
         a_idx, b_idx = s_tree.query(s_pts, predicate="dwithin", distance=r.duplicate_tolerance_m)
         for a, b in zip(a_idx.tolist(), b_idx.tolist(), strict=True):
-            if a < b:
+            if a < b and S[a].id in scope_s_ids and S[b].id in scope_s_ids:
                 sa, sb = S[a], S[b]
                 add("duplicate-structure", "high", "structure", sa.id, sa.x, sa.y, sa.lon, sa.lat,
                     f"Within {math.dist((sa.x, sa.y), (sb.x, sb.y)):.2f} m of structure {sb.id}: likely duplicate record")
@@ -343,7 +377,7 @@ def analyse(ds: Dataset, rules: RulePack | None = None) -> AnalysisResult:
     seen: set[tuple[str, str]] = set()
     for ln, i in ends:
         v = volts[ln.id]
-        if not v.ok:
+        if not v.ok or not inner(*ln.xy[i]):
             continue
         for j in e_tree.query(shapely.Point(*ln.xy[i]), predicate="dwithin", distance=r.snap_tolerance_m).tolist():
             other = ends[j][0]
@@ -358,7 +392,7 @@ def analyse(ds: Dataset, rules: RulePack | None = None) -> AnalysisResult:
                 add("joint-voltage", "medium", "line", ln.id, *ln.xy[i], *ln.lonlat[i],
                     f"Joins line {other.id} but voltage differs ({ln.tags.get('voltage')} vs {other.tags.get('voltage')})")
 
-    for s in S:
+    for s in scope_s:
         if s.tags.get("fixme"):
             add("fixme", "low", "structure", s.id, s.x, s.y, s.lon, s.lat, f"Source note: {s.tags['fixme']}")
 
@@ -372,11 +406,11 @@ def analyse(ds: Dataset, rules: RulePack | None = None) -> AnalysisResult:
     attr = sum(f["have"] / max(1, f["total"]) for f in critical) / max(1, len(critical))
     topo_bad = sum(1 for i in issues if i.check in TOPOLOGY_BAD)
     geom_bad = sum(1 for i in issues if i.check in GEOMETRY_BAD)
-    topo = max(0.0, 1 - topo_bad / max(1, len(S) * 0.05))
-    geom = max(0.0, 1 - geom_bad / max(1, len(L) * 0.5))
+    topo = max(0.0, 1 - topo_bad / max(1, len(scope_s) * 0.05))
+    geom = max(0.0, 1 - geom_bad / max(1, len(scope_l) * 0.5))
     w = r.score_weights
     score = _round(100 * (w.get("attributes", 0.5) * attr + w.get("topology", 0.3) * topo + w.get("geometry", 0.2) * geom))
     parts = {"attributes": _round(attr * 100), "topology": _round(topo * 100), "geometry": _round(geom * 100)}
 
     return AnalysisResult(ds, r, issues, checks, completeness, endpoints, spans, span_stats, line_info,
-                          score, parts, (minx, miny, maxx, maxy), notes)
+                          score, parts, (minx, miny, maxx, maxy), notes, scope_s, scope_l)

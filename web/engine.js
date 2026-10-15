@@ -38,7 +38,21 @@ function pointInRing(p, ring){ let inside = false; for(let i = 0, j = ring.lengt
   if(((a.y > p.y) !== (b.y > p.y)) && (p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x)) inside = !inside; } return inside; }
 function distToSeg(p, a, b){ const dx = b.x - a.x, dy = b.y - a.y, L = dx*dx + dy*dy; let t = L ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / L : 0; t = Math.max(0, Math.min(1, t));
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)); }
-function distToRing(p, ring){ if(pointInRing(p, ring)) return 0; let d = Infinity; for(let i = 0; i < ring.length - 1; i++) d = Math.min(d, distToSeg(p, ring[i], ring[i + 1])); return d; }
+function distToBoundary(p, ring){ let d = Infinity; for(let i = 0; i < ring.length - 1; i++) d = Math.min(d, distToSeg(p, ring[i], ring[i + 1])); return d; }
+function distToRing(p, ring){ return pointInRing(p, ring) ? 0 : distToBoundary(p, ring); }
+function segCross(a, b, c, d){ const o = (p, q, r) => Math.sign((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x));
+  return o(a, b, c) !== o(a, b, d) && o(c, d, a) !== o(c, d, b); }
+function coverageRing(cov){ // [west, south, east, north] or GeoJSON Polygon → densified [[lat, lon], ...]
+  if(!cov) return null;
+  if(cov.type === "Polygon") return cov.coordinates[0].map(c => [c[1], c[0]]);
+  if(!Array.isArray(cov) || cov.length !== 4) return null;
+  const [w, s, e, n] = cov.map(Number), k = 64, out = [];
+  for(let i = 0; i < k; i++) out.push([s, w + (e - w) * i / k]);
+  for(let i = 0; i < k; i++) out.push([s + (n - s) * i / k, e]);
+  for(let i = 0; i < k; i++) out.push([n, e - (e - w) * i / k]);
+  for(let i = 0; i < k; i++) out.push([n - (n - s) * i / k, w]);
+  out.push(out[0]); return out;
+}
 
 function parseVoltage(v){
   if(v == null || v === "") return {ok:false, kind:"missing"};
@@ -51,7 +65,8 @@ function vClass(maxV){ if(maxV == null) return "unknown"; if(maxV >= 300000) ret
 
 /* ---------- Normalise input ---------- */
 function fromOverpassCompact(d){ // our compact demo format
-  return {meta:{source:d.source, fetched:d.fetched},
+  const cov = d.coverage || (Array.isArray(d.bbox) && d.bbox.length === 4 ? [d.bbox[1], d.bbox[0], d.bbox[3], d.bbox[2]] : null);
+  return {meta:{source:d.source, fetched:d.fetched}, coverage:coverageRing(cov),
     structures:d.structures.map(n => ({id:String(n.id), lat:n.lat, lon:n.lon, power:n.power, tags:n.tags || {}})),
     lines:d.lines.map(w => ({id:String(w.id), power:w.power, tags:w.tags || {}, coords:w.coords})),
     substations:(d.substations || []).map(s => ({id:String(s.id), name:s.name, voltage:s.voltage, ring:s.ring}))};
@@ -79,7 +94,7 @@ function fromGeoJSON(gj){
     else if(g.type === "MultiLineString") g.coordinates.forEach((part, i) => lines.push({id:id + "/" + i, power:tags.power || "line", tags, coords:part.map(c => [c[1], c[0]])}));
     else if(g.type === "Polygon" && /substation|plant/.test(tags.power || "")) substations.push({id, name:tags.name || "", voltage:tags.voltage || "", ring:g.coordinates[0].map(c => [c[1], c[0]])});
   }
-  return {meta:{source:"GeoJSON upload"}, structures, lines, substations, problems};
+  return {meta:{source:"GeoJSON upload"}, coverage:coverageRing(gj.coverage), structures, lines, substations, problems};
 }
 function validateCoords(ds){
   const all = ds.structures.map(s => [s.lat, s.lon]).concat(ds.lines.flatMap(l => l.coords));
@@ -118,9 +133,15 @@ function analyse(raw, opts){
   // footprint (data extent) and inner zone
   let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
   for(const p of S.concat(L.flatMap(l => l.pts))){ minx = Math.min(minx, p.x); miny = Math.min(miny, p.y); maxx = Math.max(maxx, p.x); maxy = Math.max(maxy, p.y); }
-  if(ds.meta && ds.meta.bboxLatLon){ /* optional explicit coverage */ }
   const bounds = {minx, miny, maxx, maxy};
-  const inner = p => opts.edgeBuffer <= 0 || p.x > minx + opts.edgeBuffer && p.x < maxx - opts.edgeBuffer && p.y > miny + opts.edgeBuffer && p.y < maxy - opts.edgeBuffer;
+  // coverage = the area the data is meant to describe; outside it features are context only
+  const COV = ds.coverage ? ds.coverage.map(c => P(c[0], c[1])) : null;
+  const eb = opts.edgeBuffer;
+  const inCov = p => !COV || pointInRing(p, COV);
+  const inner = p => COV ? pointInRing(p, COV) && (eb <= 0 || distToBoundary(p, COV) >= eb)
+                         : eb <= 0 || p.x > minx + eb && p.x < maxx - eb && p.y > miny + eb && p.y < maxy - eb;
+  const lineInCov = l => !COV || l.pts.some(inCov) || l.pts.some((p, i) => i > 0 && COV.some((c, j) => j > 0 && segCross(l.pts[i - 1], p, COV[j - 1], c)));
+  const scopeS = S.filter(inCov), scopeL = L.filter(lineInCov), scopeSIds = new Set(scopeS.map(s => s.id)), scopeLIds = new Set(scopeL.map(l => l.id));
   const sGrid = makeGrid(S, 10);
   const byId = new Map(); S.forEach(s => byId.set("s:" + s.id, s)); L.forEach(l => byId.set("l:" + l.id, l));
 
@@ -131,14 +152,14 @@ function analyse(raw, opts){
   for(const l of L){ const v = parseVoltage(l.tags.voltage); l.v = v; l.vclass = v.ok ? vClass(v.max) : "unknown"; }
 
   // 1. completeness
-  const completeness = {structures:STRUCT_FIELDS.map(f => { const have = S.filter(s => s.tags[f.key] != null && s.tags[f.key] !== "").length; return Object.assign({}, f, {have, total:S.length}); }),
-                        lines:LINE_FIELDS.map(f => { const have = L.filter(l => l.tags[f.key] != null && l.tags[f.key] !== "").length; return Object.assign({}, f, {have, total:L.length}); })};
-  for(const l of L) if(!l.v.ok && l.v.kind === "missing") add("line-voltage-missing", "high", "l:" + l.id, l.pts[l.pts.length >> 1], "Line has no voltage" + (l.tags.name ? " (" + l.tags.name + ")" : ""));
-  for(const l of L) if(!l.v.ok && l.v.kind === "unparseable") add("line-voltage-invalid", "high", "l:" + l.id, l.pts[l.pts.length >> 1], "Voltage value “" + l.v.raw + "” can’t be parsed");
-  for(const l of L) if(l.v.ok && l.v.multi) add("line-voltage-multi", "medium", "l:" + l.id, l.pts[l.pts.length >> 1], "Several voltages on one line (" + l.tags.voltage + "): split into circuits or confirm a shared-structure line");
+  const completeness = {structures:STRUCT_FIELDS.map(f => { const have = scopeS.filter(s => s.tags[f.key] != null && s.tags[f.key] !== "").length; return Object.assign({}, f, {have, total:scopeS.length}); }),
+                        lines:LINE_FIELDS.map(f => { const have = scopeL.filter(l => l.tags[f.key] != null && l.tags[f.key] !== "").length; return Object.assign({}, f, {have, total:scopeL.length}); })};
+  for(const l of scopeL) if(!l.v.ok && l.v.kind === "missing") add("line-voltage-missing", "high", "l:" + l.id, l.pts[l.pts.length >> 1], "Line has no voltage" + (l.tags.name ? " (" + l.tags.name + ")" : ""));
+  for(const l of scopeL) if(!l.v.ok && l.v.kind === "unparseable") add("line-voltage-invalid", "high", "l:" + l.id, l.pts[l.pts.length >> 1], "Voltage value “" + l.v.raw + "” can’t be parsed");
+  for(const l of scopeL) if(l.v.ok && l.v.multi) add("line-voltage-multi", "medium", "l:" + l.id, l.pts[l.pts.length >> 1], "Several voltages on one line (" + l.tags.voltage + "): split into circuits or confirm a shared-structure line");
 
   // 2. cables vs circuits
-  for(const l of L){ const c = Number(l.tags.cables), k = Number(l.tags.circuits);
+  for(const l of scopeL){ const c = Number(l.tags.cables), k = Number(l.tags.circuits);
     if(l.tags.cables && l.tags.circuits && isFinite(c) && isFinite(k) && c !== 3 * k) add("cables-circuits", "medium", "l:" + l.id, l.pts[l.pts.length >> 1], "cables=" + l.tags.cables + " but circuits=" + l.tags.circuits + " (expected cables = 3 × circuits for 3-phase AC)"); }
 
   // vertex → structure snapping
@@ -164,14 +185,20 @@ function analyse(raw, opts){
         else if(st){ endpointStats.onStructure++; }
         else if(SUB.some(s => distToRing(p, s.ring) <= opts.subTol)){ endpointStats.atSubstation++; }
         else if(vGrid.near(p, opts.snapTol).some(v => v.line !== l.id)){ endpointStats.joint++; }
-        else { endpointStats.dangling++; add("dangling-end", "high", "l:" + l.id, p, "Line end is not on a structure, a substation or another line"); }
+        else { endpointStats.dangling++;
+          let detail = "Line end is not on a structure, a substation or another line";
+          const nb = vGrid.near(p, 50).filter(v => v.line !== l.id).sort((a, b) => dist(p, a) - dist(p, b))[0];
+          if(nb) detail += "; line " + nb.line + " passes " + Math.round(dist(p, nb)) + " m away, so a structure or connection is probably missing between them";
+          add("dangling-end", "high", "l:" + l.id, p, detail); }
       } else if(!st && inner(p)){ bends++; interior++; }
       if(st){
-        if(prevS && prevS.id !== st.id){ spans.push({line:l.id, vclass:l.vclass, a:prevS, b:st, len:alongSinceStruct, chord:dist(prevS, st), vertices:i - prevIdx - 1}); }
+        if(prevS && prevS.id !== st.id && inner(prevS) && inner(st)){ spans.push({line:l.id, vclass:l.vclass, a:prevS, b:st, len:alongSinceStruct, chord:dist(prevS, st), vertices:i - prevIdx - 1}); }
         prevS = st; prevIdx = i; alongSinceStruct = 0;
       }
     });
     l.length = along;
+    l.inScope = scopeLIds.has(l.id);
+    l.lengthInCoverage = !COV ? along : l.pts.reduce((acc, p, i) => i && inCov({x:(p.x + l.pts[i - 1].x) / 2, y:(p.y + l.pts[i - 1].y) / 2}) ? acc + dist(l.pts[i - 1], p) : acc, 0);
     if(interior) add("bend-no-structure", interior > 2 ? "medium" : "low", "l:" + l.id, l.pts[Math.max(1, l.pts.length >> 1)], interior + " line vertex(es) with no structure: missing pole/tower or digitising noise");
   }
 
@@ -180,7 +207,7 @@ function analyse(raw, opts){
 
   // 4. duplicates
   const seen = new Set();
-  for(const s of S){ for(const o of sGrid.near(s, opts.dupTol)){ if(o.id === s.id) continue; const k = [s.id, o.id].sort().join("|"); if(seen.has(k)) continue; seen.add(k);
+  for(const s of S){ for(const o of sGrid.near(s, opts.dupTol)){ if(o.id === s.id) continue; const k = [s.id, o.id].sort().join("|"); if(seen.has(k)) continue; seen.add(k); if(!scopeSIds.has(s.id) || !scopeSIds.has(o.id)) continue;
     add("duplicate-structure", "high", "s:" + s.id, s, "Within " + dist(s, o).toFixed(2) + " m of structure " + o.id + ": likely duplicate record"); } }
 
   // 5. span outliers by voltage class
@@ -196,12 +223,12 @@ function analyse(raw, opts){
   // 6. joint voltage mismatch
   const endIdx = makeGrid(ends, 10);
   const vm = new Set();
-  for(const e of ends){ const l = L.find(x => x.id === e.line); if(!l.v.ok) continue;
+  for(const e of ends){ const l = L.find(x => x.id === e.line); if(!l.v.ok || !inner(e)) continue;
     for(const o of endIdx.near(e, opts.snapTol)){ if(o.line === e.line) continue; const k = [e.line, o.line].sort().join("|"); if(vm.has(k)) continue; vm.add(k);
       const l2 = L.find(x => x.id === o.line); if(l2.v.ok && l2.v.max !== l.v.max) add("joint-voltage", "medium", "l:" + l.id, e, "Joins line " + l2.id + " but voltage differs (" + l.tags.voltage + " vs " + l2.tags.voltage + ")"); } }
 
   // 7. flags from source
-  for(const s of S) if(s.tags.fixme) add("fixme", "low", "s:" + s.id, s, "Source note: " + s.tags.fixme);
+  for(const s of scopeS) if(s.tags.fixme) add("fixme", "low", "s:" + s.id, s, "Source note: " + s.tags.fixme);
 
   // checks catalogue + score
   const CHECKS = [
@@ -222,12 +249,12 @@ function analyse(raw, opts){
   const critical = completeness.structures.filter(f => ["ref","line_attachment","material"].includes(f.key)).concat(completeness.lines.filter(f => f.key === "voltage"));
   const attrScore = critical.reduce((s, f) => s + f.have / Math.max(1, f.total), 0) / critical.length;           // 0..1
   const topoBad = issues.filter(i => ["dangling-end","orphan-structure","duplicate-structure","joint-voltage"].includes(i.check)).length;
-  const topoScore = Math.max(0, 1 - topoBad / Math.max(1, S.length * 0.05));
+  const topoScore = Math.max(0, 1 - topoBad / Math.max(1, scopeS.length * 0.05));
   const geomBad = issues.filter(i => ["span-long","bend-no-structure"].includes(i.check)).length;
-  const geomScore = Math.max(0, 1 - geomBad / Math.max(1, L.length * 0.5));
+  const geomScore = Math.max(0, 1 - geomBad / Math.max(1, scopeL.length * 0.5));
   const score = Math.round(100 * (0.5 * attrScore + 0.3 * topoScore + 0.2 * geomScore));
 
-  return {opts, crs, bounds, structures:S, lines:L, substations:SUB, byId, issues, checks:CHECKS, completeness, endpointStats, spans, spanStats,
+  return {opts, crs, bounds, coverage:COV, scopeStructures:scopeS, scopeLines:scopeL, structures:S, lines:L, substations:SUB, byId, issues, checks:CHECKS, completeness, endpointStats, spans, spanStats,
           bends, score, parts:{attributes:Math.round(attrScore * 100), topology:Math.round(topoScore * 100), geometry:Math.round(geomScore * 100)}, meta:ds.meta || {}};
 }
 
@@ -237,10 +264,10 @@ function gauss(r){ let u = 0, v = 0; while(!u) u = r(); while(!v) v = r(); retur
 function simulateDetections(res, seed){
   const r = mulberry32(seed || 7), crs = res.crs, det = [];
   // one line digitised with a systematic offset (old map source)
-  const offsetLine = res.lines.filter(l => l.vclass === "110 kV").sort((a, b) => b.pts.length - a.pts.length)[3];
-  const offsetIds = new Set(offsetLine ? offsetLine.pts.map(p => { const n = res.structures.find(s => Math.hypot(s.x - p.x, s.y - p.y) < 1); return n && n.id; }).filter(Boolean) : []);
+  const offsetLine = res.scopeLines.filter(l => l.vclass === "110 kV").sort((a, b) => b.pts.length - a.pts.length)[3];
+  const offsetIds = new Set(offsetLine ? offsetLine.pts.map(p => { const n = res.scopeStructures.find(s => Math.hypot(s.x - p.x, s.y - p.y) < 1); return n && n.id; }).filter(Boolean) : []);
   let k = 0;
-  for(const s of res.structures){
+  for(const s of res.scopeStructures){
     if(r() < 0.035) continue; // missed / removed in the field
     let dx = gauss(r) * 0.5, dy = gauss(r) * 0.5;
     if(offsetIds.has(s.id)){ dx -= 4.2; dy += 2.6; } // register is ~5 m off the true position here
@@ -250,7 +277,7 @@ function simulateDetections(res, seed){
   const longSpans = res.spans.filter(sp => sp.len > 1.6 * (res.spanStats[sp.vclass] || {median:1e9}).median);
   longSpans.slice(0, 12).forEach(sp => det.push({id:"D" + (++k), x:(sp.a.x + sp.b.x) / 2 + gauss(r), y:(sp.a.y + sp.b.y) / 2 + gauss(r), cls:"tower", truth:null}));
   // false positives: street lights / signs near lines (pole_np)
-  const L = res.lines; for(let i = 0; i < Math.round(res.structures.length * 0.015); i++){ const l = L[Math.floor(r() * L.length)], p = l.pts[Math.floor(r() * l.pts.length)];
+  const L = res.scopeLines; for(let i = 0; i < Math.round(res.scopeStructures.length * 0.015); i++){ const l = L[Math.floor(r() * L.length)], p = l.pts[Math.floor(r() * l.pts.length)];
     det.push({id:"D" + (++k), x:p.x + 6 + r() * 20, y:p.y + 6 + r() * 20, cls:"pole_np", truth:null}); }
   // lat/lon not needed for matching; keep for export via inverse-free approximation
   return {points:det, offsetLine:offsetLine ? offsetLine.id : null, synthetic:true};
@@ -259,11 +286,11 @@ function reconcile(res, det, tol){
   tol = tol || 3;
   const D = det.points.filter(p => p.cls !== "pole_np" || true);
   const grid = makeGrid(D, 10), cand = [];
-  for(const s of res.structures) for(const d of grid.near(s, tol)) cand.push({s, d, dd:dist(s, d)});
+  for(const s of res.scopeStructures) for(const d of grid.near(s, tol)) cand.push({s, d, dd:dist(s, d)});
   cand.sort((a, b) => a.dd - b.dd);
   const usedS = new Set(), usedD = new Set(), pairs = [];
   for(const c of cand){ if(usedS.has(c.s.id) || usedD.has(c.d.id)) continue; usedS.add(c.s.id); usedD.add(c.d.id); pairs.push(c); }
-  const regOnly = res.structures.filter(s => !usedS.has(s.id));
+  const regOnly = res.scopeStructures.filter(s => !usedS.has(s.id));
   const detOnly = D.filter(d => !usedD.has(d.id));
   // near-misses: register-only with a detection within 3×tol → likely positional offset, not missing
   const wide = makeGrid(detOnly, 10);

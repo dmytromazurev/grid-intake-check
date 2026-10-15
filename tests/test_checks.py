@@ -115,6 +115,36 @@ def test_field_aliases(rules_no_edge):
     assert res.line_info["L1"]["voltage_class"] == "110 kV"
 
 
+def test_coverage_limits_checks():
+    # a line continues 3 km east of the coverage box with structures only inside: without coverage
+    # this would report a dangling end and a 3 km span; with coverage it is context and passes
+    from conftest import ll
+
+    from gridintake import load_rulepack
+    r = load_rulepack("default")
+    xs = list(range(0, 2001, 200))
+    gj = fc(*[point(f"t{i}", x, 0) for i, x in enumerate(xs)],
+            line("L1", [(x, 0) for x in xs] + [(5000, 0)], voltage="110000", cables="3", circuits="1"))
+    w, s = ll(-1000, -1000)
+    e, n = ll(2500, 1000)
+    res = analyse(load_dataset(gj, coverage=[w, s, e, n]), r)
+    c = counts(res)
+    assert c["dangling-end"] == 0 and c["span-long"] == 0
+    no_cov = analyse(load_dataset(gj), r)
+    assert counts(no_cov)["span-long"] == 0  # outer span ends near the data edge, so it is skipped too
+    assert res.summary()["coverage"] == "declared"
+
+
+def test_structures_outside_coverage_are_context():
+    from conftest import ll
+    gj = fc(point("in", 0, 0), point("out", 5000, 0), line("L1", [(0, 0), (5000, 0)], voltage="110000"))
+    w, s = ll(-500, -500)
+    e, n = ll(500, 500)
+    res = analyse(load_dataset(gj, coverage=[w, s, e, n]), __import__("gridintake").load_rulepack("default"))
+    assert [x.id for x in res.scope_structures] == ["in"]
+    assert res.completeness["structures"][0]["total"] == 1
+
+
 def test_edge_buffer_ignores_cut_lines():
     from gridintake import load_rulepack
     r = load_rulepack("default")

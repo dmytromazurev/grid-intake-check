@@ -2,8 +2,10 @@
 
     python scripts/fetch_osm.py --bbox 54.58,25.00,54.82,25.50 --out data/vilnius-osm.json
 
-Fetches power lines, structures (tower, pole, portal, terminal) and substation footprints, then
-writes the compact format the package and the web demo read. OSM changes daily, so a fresh
+Fetches power lines touching the box (whole, as OSM stores them), every structure on those lines
+(tower, pole, portal, terminal, also outside the box) and substation footprints, then writes the
+compact format the package and the web demo read. The box is stored as the coverage area: checks
+only run inside it, the rest is context. OSM changes daily, so a fresh
 extract will not reproduce the golden numbers in tests/test_vilnius.py exactly.
 """
 
@@ -49,7 +51,11 @@ def main() -> None:
     ap.add_argument("--out", default="data/vilnius-osm.json")
     a = ap.parse_args()
     bb = a.bbox
-    grid = overpass(f'[out:json][timeout:180];(way["power"~"^(line|minor_line)$"]({bb});node["power"~"^(tower|pole|portal|terminal)$"]({bb}););out geom tags;')
+    # Lines touching the box come back whole, so also fetch every structure on those lines, including
+    # the ones outside the box; otherwise lines leaving the box look like they lose their structures.
+    struct = '"power"~"^(tower|pole|portal|terminal)$"'
+    grid = overpass(f'[out:json][timeout:180];way["power"~"^(line|minor_line)$"]({bb})->.l;'
+                    f'(.l;node(w.l)[{struct}];node[{struct}]({bb}););out geom tags;')
     subs = overpass(f'[out:json][timeout:120];(way["power"~"^(substation|plant)$"]({bb});relation["power"~"^(substation|plant)$"]({bb}););out geom tags;')
 
     structures, lines, substations = [], [], []
@@ -73,8 +79,11 @@ def main() -> None:
             if area_m2(ring) > 1500 or any(x in v for x in ("110000", "330000", "35000")):
                 substations.append({"id": e["id"], "name": t.get("name", ""), "voltage": v, "kind": t.get("power"),
                                     "ring": [[round(la, 6), round(lo, 6)] for la, lo in ring]})
+    south, west, north, east = (float(x) for x in bb.split(","))
     out = {"source": "OpenStreetMap contributors (ODbL), Overpass API", "fetched": grid["osm3s"]["timestamp_osm_base"],
-           "bbox": [float(x) for x in bb.split(",")], "structures": structures, "lines": lines, "substations": substations}
+           "bbox": [south, west, north, east],
+           "coverage": [west, south, east, north],  # analysis area (lon/lat); data outside it is context only
+           "structures": structures, "lines": lines, "substations": substations}
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, separators=(",", ":"), ensure_ascii=False)
     print(f"{len(structures)} structures, {len(lines)} lines, {len(substations)} substations → {a.out}")
