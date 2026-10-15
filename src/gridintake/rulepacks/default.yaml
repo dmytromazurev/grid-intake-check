@@ -1,0 +1,61 @@
+# Default rule pack. Copy it per customer and adjust tolerances, aliases and mappings.
+name: default
+
+snap_tolerance_m: 1.0          # a line vertex counts as "on a structure" within this distance
+duplicate_tolerance_m: 2.0     # two structures closer than this are probably one structure
+substation_tolerance_m: 30     # a line end within this distance of a substation footprint terminates there
+edge_buffer_m: 300             # ignore line ends near the data boundary (extract cut, not a real gap)
+span:
+  long_factor: 2.5             # flag spans longer than this × the median span of their voltage class
+  min_length_m: 15             # flag spans shorter than this (duplicates, gantries)
+
+voltage_unit: auto             # V, kV or auto (values all <= 1000 are treated as kV)
+
+voltage_classes:               # first match from the top wins
+  - {name: "330 kV", min_volts: 300000}
+  - {name: "110 kV", min_volts: 100000}
+  - {name: "35 kV", min_volts: 30000}
+  - {name: "6–20 kV", min_volts: 1000}
+  - {name: "LV", min_volts: 0}
+
+required_fields:
+  structure:
+    - {key: ref, label: "Structure number", critical: true,
+       why: "Needed to match the model to the utility’s asset register, work orders and field reports."}
+    - {key: line_attachment, label: "Suspension / tension (anchor)", critical: true,
+       why: "Decides how load and tension sections are modelled; wrong type means wrong sag and wrong structure loads."}
+    - {key: material, label: "Material", critical: true,
+       why: "Selects the pole/tower library type, strength and stiffness for loading and FEA."}
+    - {key: design, label: "Design / configuration",
+       why: "Picks the assembly (crossarm layout, phase spacing) used for clearance and clash checks."}
+    - {key: height, label: "Height",
+       why: "Attachment heights drive ground clearance; without it the model relies on LiDAR or defaults."}
+  line:
+    - {key: voltage, label: "Voltage", critical: true,
+       why: "Selects clearance rules (by voltage and object type) and the right standards."}
+    - {key: cables, label: "Cables (conductor count)",
+       why: "Number of phase conductors to model per span."}
+    - {key: circuits, label: "Circuits",
+       why: "Single or double circuit changes geometry, loads and clash pairs."}
+    - {key: name, label: "Line name / circuit ID",
+       why: "Needed for reporting by circuit and for talking to the utility’s engineers."}
+    - {key: operator, label: "Operator",
+       why: "Confirms asset ownership; foreign-owned crossings must be excluded or flagged."}
+
+# Utility exports rarely use OSM keys. Map customer column names to canonical keys here.
+field_aliases:
+  ref: [ref, structure_no, STRUCT_NO, POLE_ID, asset_id]
+  voltage: [voltage, VOLTAGE, voltage_v, VOLTAGE_KV, kv]
+  material: [material, MATERIAL, pole_material]
+  line_attachment: [line_attachment, FUNCTION, structure_function]
+  height: [height, HEIGHT, height_m]
+  name: [name, CIRCUIT, circuit_name, line_name]
+
+score_weights: {attributes: 0.5, topology: 0.3, geometry: 0.2}
+
+# Source value → library type. Target names are placeholders for the customer's library entries.
+mapping:
+  power: {tower: TOWER, pole: POLE, portal: GANTRY, terminal: TERMINAL}
+  material: {concrete: CONCRETE_POLE, metal: STEEL_LATTICE, steel: STEEL_LATTICE, wood: WOOD_POLE, composite: COMPOSITE_POLE}
+  line_attachment: {suspension: SUSPENSION, anchor: TENSION, pin: SUSPENSION, pulley: SUSPENSION}
+  design: {triangle: TRIANGLE_SC, portal: PORTAL, three-level: THREE_LEVEL_DC, donau: DONAU_DC, barrel: BARREL, one-level: ONE_LEVEL}

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="Pre-ingest QA for utility power-grid data, demoed on real OpenStreetMap data around Vilnius.">
+<style>:root{color-scheme:light}body{margin:0}[hidden]{display:none!important}img{max-width:100%}</style>
+</head>
+<body>
+<title>Grid Intake Check</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@500;600;700&family=Source+Sans+3:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a working tool. Left column = analysis panels under tabs, right column = sticky schematic map of the network; on phones the map stacks above the panels. */
+:root{
+  --bg:#F3F2EE; --surface:#FFFFFF; --sunk:#E9E8E2; --ink:#1A1F2B; --muted:#5D6472; --line:#D6D4CC;
+  --accent:#1F4E8C; --accent-ink:#FFFFFF; --accent-soft:#DCE6F3;
+  --issue:#D9480F; --issue-soft:#FBE3D6; --warn:#B07A00; --warn-soft:#F6EBCB; --ok:#2F7D4A; --ok-soft:#DDEFE2;
+  --v330:#6A3FB5; --v110:#1F6FC4; --v35:#0E8C86; --v10:#4C8A2B; --vlv:#8A7B2B; --vunk:#8C8F97;
+  --sub-fill:rgba(31,78,140,.08); --sub-line:rgba(31,78,140,.35);
+  --f-display:"Archivo Narrow","Arial Narrow",Arial,sans-serif;
+  --f-body:"Source Sans 3",-apple-system,"Segoe UI",Roboto,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#111418; --surface:#181C22; --sunk:#20252D; --ink:#E6E8EC; --muted:#9AA2AF; --line:#2C323C;
+    --accent:#7FAEEB; --accent-ink:#0B1626; --accent-soft:#1D2D44;
+    --issue:#FF8A50; --issue-soft:#3A2116; --warn:#E5B94B; --warn-soft:#352B12; --ok:#6CC28C; --ok-soft:#163222;
+    --v330:#B394F2; --v110:#6BA8F0; --v35:#4CC9C1; --v10:#8BC96A; --vlv:#CDBE6A; --vunk:#7C828D;
+    --sub-fill:rgba(127,174,235,.10); --sub-line:rgba(127,174,235,.40);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#111418; --surface:#181C22; --sunk:#20252D; --ink:#E6E8EC; --muted:#9AA2AF; --line:#2C323C;
+  --accent:#7FAEEB; --accent-ink:#0B1626; --accent-soft:#1D2D44;
+  --issue:#FF8A50; --issue-soft:#3A2116; --warn:#E5B94B; --warn-soft:#352B12; --ok:#6CC28C; --ok-soft:#163222;
+  --v330:#B394F2; --v110:#6BA8F0; --v35:#4CC9C1; --v10:#8BC96A; --vlv:#CDBE6A; --vunk:#7C828D;
+  --sub-fill:rgba(127,174,235,.10); --sub-line:rgba(127,174,235,.40);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.5;margin:0}
+h1,h2,h3{font-family:var(--f-display);margin:0;line-height:1.15;text-wrap:balance}
+h1{font-size:clamp(26px,4vw,34px);font-weight:700;letter-spacing:.2px}
+h2{font-size:21px;font-weight:700}
+h3{font-size:17px;font-weight:600}
+p{margin:0}
+a{color:var(--accent)}
+code{font-family:var(--f-mono);font-size:.86em;background:var(--sunk);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+pre{margin:0;background:var(--sunk);border-radius:6px;padding:10px 12px;overflow-x:auto;font-family:var(--f-mono);font-size:12.5px;line-height:1.5;max-width:100%}
+pre code{background:none;padding:0;overflow-wrap:normal}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.eyebrow{font-family:var(--f-mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.muted{color:var(--muted)}
+.num{font-variant-numeric:tabular-nums}
+
+.shell{max-width:1440px;margin:0 auto;padding-inline:16px}
+header.top{padding-block:18px 12px;display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end;justify-content:space-between;border-bottom:1px solid var(--line)}
+header.top > div{min-width:0}
+.brand{display:grid;gap:4px}
+.actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:6px;padding:7px 12px;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;gap:6px}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.btn.sm{padding:4px 9px;font-size:13px}
+.link{background:none;border:0;padding:0;color:var(--accent);cursor:pointer;font-size:13px;text-decoration:underline;text-underline-offset:2px}
+.dsline{font-family:var(--f-mono);font-size:12px;color:var(--muted);padding-block:8px;display:flex;flex-wrap:wrap;gap:4px 14px}
+.notice{padding:10px 12px;border-radius:6px;background:var(--issue-soft);color:var(--ink);border:1px solid var(--issue);font-size:14px}
+
+.layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);gap:16px;align-items:start;padding-block:12px 48px}
+.layout > div{min-width:0}
+.mapcol{position:sticky;top:12px;display:grid;gap:8px}
+.mapwrap{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden;height:calc(100vh - 150px);min-height:420px;touch-action:none}
+canvas#map{display:block;width:100%;height:100%;cursor:grab}
+canvas#map.drag{cursor:grabbing}
+.mapctl{position:absolute;top:10px;right:10px;display:grid;gap:4px}
+.mapctl button{width:32px;height:32px;border:1px solid var(--line);background:var(--surface);border-radius:6px;cursor:pointer;font-size:16px;line-height:1}
+.scalebar{position:absolute;left:10px;bottom:10px;font-family:var(--f-mono);font-size:11px;color:var(--muted);background:var(--surface);padding:3px 6px;border-radius:4px;border:1px solid var(--line)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{display:inline-block;width:18px;height:3px;border-radius:2px}
+.legend b{display:inline-block;width:9px;height:9px;border-radius:50%;border:2px solid var(--issue)}
+.info{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:13.5px;min-height:46px}
+.info dl{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;margin:6px 0 0}
+.info dt{font-family:var(--f-mono);font-size:11.5px;color:var(--muted)}
+.info dd{margin:0;min-width:0;overflow-wrap:anywhere}
+
+nav.tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none;border-bottom:1px solid var(--line);margin-bottom:14px}
+nav.tabs button{background:none;border:0;border-bottom:3px solid transparent;padding:10px 10px 8px;font-family:var(--f-display);font-weight:600;font-size:16px;color:var(--muted);cursor:pointer;white-space:nowrap}
+nav.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+.panel{display:grid;gap:14px}
+.panel > *{min-width:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:16px;display:grid;gap:10px;min-width:0}
+.card > *{min-width:0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.between{justify-content:space-between}
+
+.scorebox{display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:center}
+.gauge{width:112px;height:112px}
+.parts{display:grid;gap:8px}
+.part{display:grid;grid-template-columns:90px 1fr 40px;gap:8px;align-items:center;font-size:13.5px}
+.bar{height:8px;background:var(--sunk);border-radius:99px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:99px;background:var(--accent)}
+.bar i.lo{background:var(--issue)} .bar i.mid{background:var(--warn)} .bar i.hi{background:var(--ok)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}
+.stat{background:var(--sunk);border-radius:6px;padding:8px 10px;display:grid;gap:2px}
+.stat b{font-family:var(--f-display);font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.stat span{font-size:12px;color:var(--muted)}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;vertical-align:top;padding:7px 8px;border-bottom:1px solid var(--line)}
+th{font-family:var(--f-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500}
+td.r,th.r{text-align:right}
+.cbar{display:grid;grid-template-columns:1fr 64px;gap:8px;align-items:center;min-width:120px}
+.why{font-size:12.5px;color:var(--muted)}
+
+.check{display:grid;grid-template-columns:10px 1fr auto;gap:10px;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);cursor:pointer;text-align:left;width:100%}
+.check:hover{border-color:var(--accent)}
+.check.sel{border-color:var(--accent);background:var(--accent-soft)}
+.sev{width:10px;height:10px;border-radius:50%}
+.sev.high{background:var(--issue)} .sev.medium{background:var(--warn)} .sev.low{background:var(--muted)} .sev.pass{background:var(--ok)}
+.chip{font-family:var(--f-mono);font-size:12px;padding:1px 8px;border-radius:99px;background:var(--sunk);color:var(--muted);white-space:nowrap}
+.chip.high{background:var(--issue-soft);color:var(--issue)} .chip.medium{background:var(--warn-soft);color:var(--warn)} .chip.pass{background:var(--ok-soft);color:var(--ok)}
+.issue{display:grid;grid-template-columns:1fr auto;gap:4px 10px;padding:8px 0;border-top:1px solid var(--line);font-size:13.5px}
+.issue .id{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+.group{display:grid;gap:6px}
+.kv{display:grid;grid-template-columns:minmax(120px,170px) 1fr;gap:8px 14px;margin:0}
+.kv dt{font-family:var(--f-mono);font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding-top:2px}
+.kv dd{margin:0;min-width:0}
+ul.plain,ol.plain{margin:0;padding-left:18px;display:grid;gap:6px}
+input[type="text"]{width:100%;min-width:120px;border:1px solid var(--line);background:var(--bg);border-radius:5px;padding:4px 7px;font-family:var(--f-mono);font-size:12.5px}
+input[type="range"]{accent-color:var(--accent)}
+textarea{width:100%;min-height:300px;border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:10px;font-family:var(--f-mono);font-size:12.5px;line-height:1.5;resize:vertical}
+.synthetic{border-left:3px solid var(--warn);padding-left:10px;font-size:13.5px}
+.callout{border-left:3px solid var(--accent);padding-left:12px}
+.rec{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.rec button{all:unset;cursor:pointer;background:var(--sunk);border-radius:6px;padding:8px 10px;display:grid;gap:2px;border:1px solid transparent}
+.rec button:focus-visible{outline:2px solid var(--accent)}
+.rec button.sel{border-color:var(--accent);background:var(--accent-soft)}
+.rec b{font-family:var(--f-display);font-size:22px;font-variant-numeric:tabular-nums}
+.rec span{font-size:12px;color:var(--muted)}
+footer{font-size:12px;color:var(--muted);padding-block:0 32px}
+
+@media (max-width:980px){
+  .layout{grid-template-columns:1fr}
+  .mapcol{position:static;order:-1}
+  .mapwrap{height:58vh;min-height:320px}
+}
+@media (max-width:520px){
+  .scorebox{grid-template-columns:1fr}
+  .kv{grid-template-columns:1fr;gap:2px}
+  .kv dd{margin-bottom:8px}
+}
+</style>
+
+<div class="shell">
+  <header class="top">
+    <div class="brand">
+      <span class="eyebrow">Prototype · pre-ingest QA for utility network data</span>
+      <h1>Grid Intake Check</h1>
+      <p class="muted" style="font-size:14px">Built by Dmytro Mazurev as a proposal for a digital-twin deployment team.</p>
+    </div>
+    <div class="actions">
+      <button class="btn primary" id="btn-demo">Load demo: Vilnius grid (OSM)</button>
+      <label class="btn" for="file-main">Upload GeoJSON / Overpass JSON</label>
+      <input type="file" id="file-main" accept=".json,.geojson,application/json" hidden>
+    </div>
+  </header>
+  <div class="dsline" id="dsline">Loading demo data…</div>
+  <div id="err" hidden></div>
+
+  <div class="layout">
+    <div>
+      <nav class="tabs" role="tablist" aria-label="Sections">
+        <button role="tab" id="tab-overview" data-tab="overview" aria-selected="true">Overview</button>
+        <button role="tab" id="tab-issues" data-tab="issues" aria-selected="false">Issues</button>
+        <button role="tab" id="tab-reconcile" data-tab="reconcile" aria-selected="false">GIS ↔ LiDAR</button>
+        <button role="tab" id="tab-mapping" data-tab="mapping" aria-selected="false">Mapping &amp; formulas</button>
+        <button role="tab" id="tab-request" data-tab="request" aria-selected="false">Customer request</button>
+        <button role="tab" id="tab-about" data-tab="about" aria-selected="false">About</button>
+      </nav>
+      <section class="panel" role="tabpanel" id="panel-overview" aria-labelledby="tab-overview"></section>
+      <section class="panel" role="tabpanel" id="panel-issues" aria-labelledby="tab-issues" hidden></section>
+      <section class="panel" role="tabpanel" id="panel-reconcile" aria-labelledby="tab-reconcile" hidden></section>
+      <section class="panel" role="tabpanel" id="panel-mapping" aria-labelledby="tab-mapping" hidden></section>
+      <section class="panel" role="tabpanel" id="panel-request" aria-labelledby="tab-request" hidden></section>
+      <section class="panel" role="tabpanel" id="panel-about" aria-labelledby="tab-about" hidden></section>
+    </div>
+    <div class="mapcol">
+      <div class="mapwrap" id="mapwrap">
+        <canvas id="map" aria-label="Schematic map of the network: lines coloured by voltage, structures as dots, issues ringed"></canvas>
+        <div class="mapctl"><button id="zin" aria-label="Zoom in">+</button><button id="zout" aria-label="Zoom out">−</button><button id="zfit" aria-label="Fit to data">⤢</button></div>
+        <div class="scalebar" id="scalebar">—</div>
+      </div>
+      <div class="legend" id="legend"></div>
+      <div class="info" id="info"><span class="muted">Click a line or structure on the map to inspect it. Drag to pan, scroll or pinch to zoom.</span></div>
+    </div>
+  </div>
+  <footer>Demo data © OpenStreetMap contributors, ODbL, via the Overpass API. OpenStreetMap is a stand-in for a utility GIS export; it is not an asset register. Simulated LiDAR detections are synthetic and labelled as such. Source, Python package, REST API and MCP server: <a href="https://github.com/dmytromazurev/grid-intake-check">github.com/dmytromazurev/grid-intake-check</a>.</footer>
+</div>
+
+<script src="engine.js"></script>
+<script src="app.js"></script>
+
+</body>
+</html>

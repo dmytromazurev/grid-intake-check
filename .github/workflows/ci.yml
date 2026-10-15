@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests scripts
+      - run: pytest -q
+      - name: Readiness gate on the demo data (expected to fail the 80 threshold)
+        run: |
+          gridintake check examples/vilnius-grid.geojson --html out/report.html --csv out/issues.csv || true
+          ! gridintake check examples/vilnius-grid.geojson --fail-under 80
+      - uses: actions/upload-artifact@v4
+        if: matrix.python == '3.12'
+        with:
+          name: vilnius-report
+          path: out/
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t grid-intake-check .
+      - name: Smoke test the API container
+        run: |
+          docker run -d -p 8000:8000 --name gic grid-intake-check
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8000/health && break; sleep 1; done
+          curl -fs -F file=@examples/vilnius-grid.geojson "http://127.0.0.1:8000/v1/check?issue_limit=0" | python -c "import json,sys; s=json.load(sys.stdin)['summary']; print(s['score']); assert s['score']==45"

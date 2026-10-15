@@ -1,0 +1,46 @@
+# Example customer rule pack. Copy default.yaml, then change only what differs for this customer.
+# Use with:  gridintake check export.geojson --rules examples/rulepack-customer.yaml
+name: example-utility
+
+snap_tolerance_m: 0.5          # survey-grade export: vertices should sit on structures
+duplicate_tolerance_m: 1.5
+substation_tolerance_m: 40     # large yards with gantries away from the fence
+edge_buffer_m: 500
+span:
+  long_factor: 2.2
+  min_length_m: 20
+
+voltage_unit: kV               # this export stores 110, 330, 10
+
+voltage_classes:
+  - {name: "330 kV", min_volts: 300000}
+  - {name: "110 kV", min_volts: 100000}
+  - {name: "35 kV", min_volts: 30000}
+  - {name: "10 kV", min_volts: 6000}
+  - {name: "0.4 kV", min_volts: 0}
+
+required_fields:
+  structure:
+    - {key: ref, label: "Structure number", critical: true, why: "Joins the model to the asset register and work orders."}
+    - {key: line_attachment, label: "Suspension / tension", critical: true, why: "Defines tension sections."}
+    - {key: material, label: "Material", critical: true, why: "Selects the pole/tower library type."}
+    - {key: install_year, label: "Install year", why: "Age-based derating and replacement planning."}
+  line:
+    - {key: voltage, label: "Voltage", critical: true, why: "Selects clearance rules."}
+    - {key: conductor, label: "Conductor type", critical: true, why: "Weight, diameter and thermal properties for sag and ratings."}
+    - {key: name, label: "Circuit ID", why: "Reporting by circuit."}
+
+field_aliases:
+  ref: [STRUCT_NO, POLE_ID]
+  line_attachment: [FUNCTION]
+  material: [MAT_CODE]
+  install_year: [INST_YEAR, YEAR_BUILT]
+  voltage: [VOLTAGE_KV]
+  conductor: [COND_TYPE, CONDUCTOR]
+  name: [CIRCUIT]
+
+score_weights: {attributes: 0.6, topology: 0.25, geometry: 0.15}
+
+mapping:
+  material: {B: CONCRETE_POLE, M: STEEL_LATTICE, D: WOOD_POLE}
+  line_attachment: {T: TENSION, S: SUSPENSION, K: TENSION}
